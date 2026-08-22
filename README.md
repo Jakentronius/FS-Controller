@@ -4,7 +4,7 @@ Web control panel for a hobby CNC (Genmitsu 3018-class) converted for
 micro friction surfacing, with closed-loop plunge-force control. Runs on
 the machine's Raspberry Pi alongside Klipper / Moonraker / Mainsail.
 
-Companion project: [FS CAM](https://github.com/samconlin/circuit_cam) turns
+Companion project: [FS CAM](https://github.com/Jakentronius/circuit_cam) turns
 DXF/SVG drawings into annotated G-code jobs for this dashboard.
 
 > **Safety:** this software drives a machine that presses a spinning rod
@@ -30,7 +30,7 @@ On the Pi, with Klipper + Moonraker already working (Moonraker is expected
 at `http://127.0.0.1:7125`) and I2C enabled (`raspi-config`):
 
 ```bash
-git clone https://github.com/samconlin/friction_surfacing.git ~/load_cells/app
+git clone https://github.com/Jakentronius/FS-Controller.git ~/load_cells/app
 python3 -m venv ~/load_cells/venv
 ~/load_cells/venv/bin/pip install -r ~/load_cells/app/requirements.txt
 
