@@ -1,0 +1,5 @@
+Flask>=3.1
+requests>=2.32
+sparkfun-qwiic-nau7802>=2.0
+sparkfun-qwiic-i2c>=2.0
+smbus2>=0.6

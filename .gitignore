@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+
+# Runtime state (created by the app; machine-specific)
+config.json
+mesh.json
+touchoff.json
+app.log
+logs/
+jobs/
+profiles/
+meshes/
+
+# Experimental run data
+analysis/
+
+# Editor / tooling
+.claude/
+.vscode/
+.idea/
+*.swp
+.DS_Store

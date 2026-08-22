@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Friction Surfacing Control</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <header>
+    <div class="title-block">
+      <h1>Friction Surfacing Control</h1>
+      <div id="status-bar">
+        <span id="pill-klipper" class="pill">Klipper: &hellip;</span>
+        <span id="pill-sensor" class="pill">Sensor: &hellip;</span>
+        <span id="pill-autoz" class="pill">AUTO Z: &hellip;</span>
+        <span id="pill-log" class="pill">Log: &hellip;</span>
+        <span id="pill-job" class="pill">Job: &hellip;</span>
+      </div>
+    </div>
+    <div class="header-btns">
+      <button id="btn-fw-restart" class="btn btn-gray"
+        title="Klipper FIRMWARE_RESTART (after E-STOP or MCU errors)">FW Restart</button>
+      <button id="btn-estop" class="btn btn-estop" title="Klipper emergency stop (M112)">E-STOP</button>
+    </div>
+  </header>
+
+  <div id="fault-banner" class="fault-banner" hidden>
+    <span id="fault-text"></span>
+    <button id="btn-fault-clear" class="btn btn-gray">Clear Fault</button>
+  </div>
+
+  <nav id="tabs">
+    <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+    <button class="tab-btn" data-tab="calibration">Calibration</button>
+    <button class="tab-btn" data-tab="tuning">Tuning</button>
+    <button class="tab-btn" data-tab="jobs">Jobs</button>
+  </nav>
+
+  <!-- ============================= DASHBOARD ============================= -->
+  <section id="tab-dashboard" class="tab active">
+    <div class="panel readouts">
+      <div class="readout">
+        <span class="readout-label">Force (<span class="units-label">g</span>)</span>
+        <span id="ro-force" class="readout-value accent">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Raw ADC</span>
+        <span id="ro-raw" class="readout-value">--</span>
+      </div>
+      <div class="readout-divider"></div>
+      <div class="readout">
+        <span class="readout-label">X <span id="homed-x" class="badge">?</span></span>
+        <span id="ro-x" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Y <span id="homed-y" class="badge">?</span></span>
+        <span id="ro-y" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Z <span id="homed-z" class="badge">?</span></span>
+        <span id="ro-z" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Z Offset (mm)</span>
+        <span id="ro-zoff" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Surface Z (mm)</span>
+        <span id="ro-surface" class="readout-value">--</span>
+      </div>
+    </div>
+
+    <div class="panel controls">
+      <button id="btn-log" class="btn btn-green">Start Log</button>
+      <span id="log-file" class="hint"></span>
+      <span class="spacer"></span>
+      <button id="btn-tare" class="btn btn-blue">Tare</button>
+      <button id="btn-clear-tare" class="btn btn-gray">Clear Tare</button>
+      <span class="spacer"></span>
+      <label>Target (<span class="units-label">g</span>):
+        <input type="number" id="input-target" step="any">
+      </label>
+      <button id="btn-set-target" class="btn btn-blue">Set</button>
+      <button id="btn-control" class="btn btn-gray">AUTO Z: OFF</button>
+    </div>
+
+    <div class="panel controls">
+      <button id="btn-touchoff" class="btn btn-blue">Touch Off</button>
+      <button id="btn-touchoff-abort" class="btn btn-red" disabled>Abort</button>
+      <label>Hover after (mm):
+        <input type="number" id="touchoff-hover" value="2" step="any"></label>
+      <span class="spacer"></span>
+      <span id="touchoff-status" class="hint">Single-point touch-off at the current XY —
+        finds the surface, parks just above it, and reports the change vs the last
+        touch-off (mechtrode wear / new rod length).</span>
+    </div>
+
+    <div class="dash-row">
+      <div class="panel jog-panel">
+        <h2>Jog</h2>
+        <div class="jog-layout">
+          <div class="jog-grid">
+            <div></div>
+            <button class="btn btn-jog" data-jog-axis="y" data-jog-sign="1">Y+</button>
+            <div></div>
+            <button class="btn btn-jog" data-jog-axis="x" data-jog-sign="-1">X&minus;</button>
+            <div class="jog-center"></div>
+            <button class="btn btn-jog" data-jog-axis="x" data-jog-sign="1">X+</button>
+            <div></div>
+            <button class="btn btn-jog" data-jog-axis="y" data-jog-sign="-1">Y&minus;</button>
+            <div></div>
+          </div>
+          <div class="jog-zcol">
+            <button class="btn btn-jog" data-jog-axis="z" data-jog-sign="1">Z+</button>
+            <button class="btn btn-jog" data-jog-axis="z" data-jog-sign="-1">Z&minus;</button>
+          </div>
+        </div>
+        <div class="form-row">
+          <span class="hint">Step:</span>
+          <span id="jog-steps">
+            <button class="btn btn-step" data-step="0.1">0.1</button>
+            <button class="btn btn-step active" data-step="1">1</button>
+            <button class="btn btn-step" data-step="10">10</button>
+          </span>
+          <span class="hint">mm</span>
+          <span class="spacer"></span>
+          <span class="hint">Home:</span>
+          <button id="btn-home-all" class="btn btn-blue">All</button>
+          <button id="btn-home-xy" class="btn btn-gray">XY</button>
+          <button id="btn-home-z" class="btn btn-gray">Z</button>
+          <button id="btn-park" class="btn btn-gray"
+            title="Raise Z, then move to the park position (Calibration tab)">Park</button>
+        </div>
+        <div class="form-row">
+          <span class="hint">Work zero:</span>
+          <button id="btn-xyzero" class="btn btn-blue"
+            title="Make the current position the job origin (X0 Y0)">Zero XY Here</button>
+          <button id="btn-xyzero-clear" class="btn btn-gray">Clear</button>
+          <span id="workzero-status" class="hint">machine coords</span>
+        </div>
+        <div class="form-row">
+          <span class="hint">Go to:</span>
+          <input type="number" id="goto-x" step="any" placeholder="X" class="goto-input">
+          <input type="number" id="goto-y" step="any" placeholder="Y" class="goto-input">
+          <input type="number" id="goto-z" step="any" placeholder="Z" class="goto-input">
+          <button id="btn-goto" class="btn btn-blue">Go</button>
+        </div>
+        <div id="jog-status" class="hint"></div>
+      </div>
+
+      <div class="charts-col">
+        <div class="panel chart-container"><canvas id="forceChart"></canvas></div>
+        <div class="panel chart-container"><canvas id="zChart"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================ CALIBRATION ============================ -->
+  <section id="tab-calibration" class="tab">
+    <form id="cal-form">
+      <div class="panel">
+        <h2>Scale Response Factor</h2>
+        <p class="hint">Raw ADC counts per unit of force. Enter this directly from
+          your own calibration — e.g. the slope of a multi-point linear fit of
+          raw counts against known masses. Log raw data from the Dashboard tab,
+          fit offline, and enter the slope here.<br>
+          Live raw ADC: <b id="cal-live-raw" class="accent">--</b></p>
+        <div class="form-row">
+          <label>Counts per unit:
+            <input type="number" id="cfg-counts_per_unit" step="any" required></label>
+          <label>Units label:
+            <input type="text" id="cfg-units_label" maxlength="10" size="6"></label>
+          <button type="submit" class="btn btn-green">Save</button>
+          <span id="cal-status" class="hint"></span>
+        </div>
+
+        <div class="form-row">
+          <a href="/api/backup"><button type="button" class="btn btn-gray">
+            Download Settings Backup</button></a>
+          <span class="hint">zip of config, profiles, meshes, jobs and touch-off
+            (SD cards fail — keep a copy)</span>
+        </div>
+
+        <details class="cal-helper">
+          <summary>Quick two-point helper (optional)</summary>
+          <p class="hint">Rough single-mass calibration: capture the raw value
+            unloaded, then with a known mass applied. Fills in the factor field
+            above — still needs Save.</p>
+          <div class="form-row">
+            <button type="button" id="btn-cap-zero" class="btn btn-blue">Capture Unloaded</button>
+            <span id="cap-zero-val" class="hint">--</span>
+            <button type="button" id="btn-cap-load" class="btn btn-blue">Capture Loaded</button>
+            <span id="cap-load-val" class="hint">--</span>
+          </div>
+          <div class="form-row">
+            <label>Known mass/force applied:
+              <input type="number" id="input-known-mass" step="any" placeholder="e.g. 500"></label>
+            <button type="button" id="btn-compute-factor" class="btn btn-gray">Compute Factor</button>
+          </div>
+        </details>
+      </div>
+
+      <div class="panel">
+        <h2>Abort Behavior</h2>
+        <div class="form-row">
+          <label>Retract (mm):
+            <input type="number" id="cfg-retract_mm" step="any"></label>
+          <label>Retract feedrate (mm/min):
+            <input type="number" id="cfg-retract_feedrate" step="any"></label>
+          <button type="submit" class="btn btn-green">Save</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Safety Limits</h2>
+        <p class="hint"><b>Max force</b>: any reading beyond this (either sign, 3
+          consecutive samples) trips a fault — force control off, all routines and
+          jobs aborted, Z retracted — until you clear it. Set it below your load
+          cells' rating. Job files with higher force targets are refused outright.
+          <b>Z floor</b>: machine Z that no correction, probe, jog or Go-to may
+          descend below — set it just above the build plate as the backstop for a
+          lying force signal. A stalled sensor (no samples for 0.5&nbsp;s) also trips
+          a fault whenever force is being relied on.</p>
+        <div class="form-row">
+          <label>Max force (<span class="units-label">g</span>, 0 = off):
+            <input type="number" id="cfg-max_force" step="any"></label>
+          <label>Z floor (mm, -1000 = off):
+            <input type="number" id="cfg-z_floor" step="any"></label>
+          <button type="submit" class="btn btn-green">Save</button>
+        </div>
+        <div class="form-row">
+          <label>Park X: <input type="number" id="cfg-park_x" step="any"></label>
+          <label>Park Y: <input type="number" id="cfg-park_y" step="any"></label>
+          <label>Park Z: <input type="number" id="cfg-park_z" step="any"></label>
+          <span class="hint">used by the Park button (Z raises first)</span>
+        </div>
+        <div class="form-row">
+          <label>Travel feed XY (mm/min):
+            <input type="number" id="cfg-travel_feedrate" step="any"></label>
+          <label>Travel feed Z (mm/min):
+            <input type="number" id="cfg-z_travel_feedrate" step="any"></label>
+          <span class="hint">Jog / Go To / Park speed; printer.cfg
+            max_velocity still caps the real speed</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Rod Change (mid-job)</h2>
+        <p class="hint">When the force controller has plunged <b>Max rod
+          consumption</b> mm beyond the mesh feedforward (i.e. the mechtrode has
+          worn down that far), the job pauses at the next engaged moment:
+          retracts, waits for you to swap rods, tares and touches off the new
+          rod, shifts the job coordinates by the length difference, waits for
+          spindle confirmation, then slowly re-engages to the active force
+          target and continues. Set 0 to disable.</p>
+        <div class="form-row">
+          <label>Max rod consumption (mm, 0 = off):
+            <input type="number" id="cfg-max_rod_consumption" step="any"></label>
+          <label>Rod-change retract (mm):
+            <input type="number" id="cfg-rod_change_retract" step="any"></label>
+          <label>Re-induction after change (s):
+            <input type="number" id="cfg-rod_change_induction_s" step="any"></label>
+          <button type="submit" class="btn btn-green">Save</button>
+        </div>
+      </div>
+    </form>
+
+    <div class="panel">
+      <h2>Surface Mesh
+        <span class="hint">maps platform tilt / substrate warp with the load cells</span></h2>
+      <p class="hint"><b>Setup:</b> same as Auto-Tune — rigid <b>non-spinning</b> rod,
+        spindle off, all axes homed, head parked a few mm above the substrate at the
+        <b>center</b> of the region to map. The routine touches off a grid
+        (default 5&times;5 over a 100&nbsp;mm square, rectangular grids allowed)
+        around that point and records the contact Z at each node. During force control the mesh acts as a
+        <b>feedforward only</b>: as the tool traverses, Z follows the interpolated surface
+        tilt while the live force reading stays primary and corrects the rest. The mesh
+        delta is zeroed wherever AUTO&nbsp;Z engages, so it never shifts absolute touch-off.</p>
+      <div class="form-row">
+        <label>Size X (mm):
+          <input type="number" id="mesh-size_x_mm" value="100" step="any"></label>
+        <label>Size Y (mm):
+          <input type="number" id="mesh-size_y_mm" value="100" step="any"></label>
+        <label>Points X:
+          <input type="number" id="mesh-points_x" value="5" step="1" min="2" max="41"></label>
+        <label>Points Y:
+          <input type="number" id="mesh-points_y" value="5" step="1" min="2" max="41"></label>
+        <label>Max descent (mm):
+          <input type="number" id="mesh-max_travel" value="15" step="any"></label>
+        <button id="btn-mesh-start" class="btn btn-green">Start Mesh Probe</button>
+        <button id="btn-mesh-abort" class="btn btn-red" disabled>Abort</button>
+      </div>
+      <p class="hint">Grid may be rectangular (max 120 points). To catch
+        short height waves along the weld direction, go dense on that axis:
+        e.g. 21&times;2 points over 100&times;20&nbsp;mm gives 5&nbsp;mm X
+        resolution in one strip.</p>
+      <div id="mesh-status" class="hint">idle</div>
+      <div class="form-row">
+        <span id="mesh-info" class="hint">No mesh stored.</span>
+        <label><input type="checkbox" id="mesh-enabled"> Use mesh during force control</label>
+        <button id="btn-mesh-clear" class="btn btn-gray">Clear Mesh</button>
+      </div>
+      <div id="mesh-grid"></div>
+      <div class="form-row">
+        <label>Name:
+          <input type="text" id="mesh-name" maxlength="60" placeholder="e.g. plate-A-mount2"></label>
+        <button id="btn-mesh-save" class="btn btn-green" disabled>Save Active Mesh</button>
+        <span id="mesh-lib-status" class="hint"></span>
+      </div>
+      <table id="mesh-table">
+        <thead><tr><th>Name</th><th>Probed</th><th>Grid</th>
+          <th>Range (mm)</th><th>Center</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <p class="hint">Loading a saved mesh makes it the active one. Only the mesh
+        <i>shape</i> matters for force control (deltas, not absolute heights), so a saved
+        mesh stays valid across mechtrode swaps — but re-probe after re-mounting or
+        shimming the plate.</p>
+    </div>
+  </section>
+
+  <!-- ============================== TUNING =============================== -->
+  <section id="tab-tuning" class="tab">
+    <div class="panel controls">
+      <button id="btn-tune-control" class="btn btn-gray">AUTO Z: OFF</button>
+      <span class="spacer"></span>
+      <label>Target (<span class="units-label">g</span>):
+        <input type="number" id="tune-force_target" step="any"></label>
+      <span class="spacer"></span>
+      <label>Step size:
+        <input type="number" id="tune-step-size" value="100" step="any"></label>
+      <button id="btn-target-down" class="btn btn-blue">&minus;</button>
+      <button id="btn-target-up" class="btn btn-blue">+</button>
+      <span class="hint">step the target to watch the response</span>
+    </div>
+
+    <div class="panel chart-lg"><canvas id="tuneChart"></canvas></div>
+
+    <div class="panel">
+      <h2>Controller Parameters
+        <span class="hint">applied live as you type &mdash; Save to persist</span></h2>
+      <div class="form-row">
+        <label>Kp (mm per <span class="units-label">g</span>):
+          <input type="number" id="tune-pid_kp" step="any"></label>
+        <label>Ki (mm per <span class="units-label">g</span>&middot;s):
+          <input type="number" id="tune-pid_ki" step="any"></label>
+        <label>Kd (mm per <span class="units-label">g</span>/s):
+          <input type="number" id="tune-pid_kd" step="any"></label>
+        <label>Deadband (<span class="units-label">g</span>):
+          <input type="number" id="tune-force_deadband" step="any"></label>
+      </div>
+      <div class="form-row">
+        <label>Eval period (s):
+          <input type="number" id="tune-control_cooldown" step="any"></label>
+        <label>Max step (mm):
+          <input type="number" id="tune-z_step_max" step="any"></label>
+        <label>Avg window (1&ndash;10):
+          <input type="number" id="tune-force_avg_samples" step="1" min="1" max="10"></label>
+        <label>Ramp (<span class="units-label">g</span>/s, 0 = off):
+          <input type="number" id="tune-force_ramp_rate" step="any" min="0"></label>
+        <label title="Extra Z pre-added when a correction reverses direction, to traverse drivetrain lash/windup. Measured by the auto-tune step test. 0 = off.">Lash comp (mm):
+          <input type="number" id="tune-backlash_comp" step="any" min="0"></label>
+      </div>
+      <div class="form-row">
+        <button id="btn-tune-save" class="btn btn-green">Save to Config</button>
+        <button id="btn-tune-revert" class="btn btn-gray">Revert to Saved</button>
+        <span id="tune-status" class="hint"></span>
+      </div>
+      <div id="pid-readout" class="hint">controller idle</div>
+    </div>
+
+    <div class="panel">
+      <h2>Auto-Tune
+        <span class="hint">probes the surface and measures the machine's force response</span></h2>
+      <p class="hint"><b>Setup:</b> rigid <b>non-spinning</b> rod in the collet, parked a few
+        mm above the substrate near the center of the build area, scale calibrated.
+        The routine tares in free air, measures sensor noise, creeps down in small steps
+        until it feels contact, steps in and out in fine increments to measure stiffness
+        and backlash, pulses the Z offset to time the loop's dead time (Kp is derived
+        from the measured lag), verifies with a short closed-loop hold at the probe force, then
+        retracts to the start height and recommends Kp / Deadband / Max step.
+        Keep a hand near E-STOP the first time you run it.</p>
+      <div class="form-row">
+        <label>Probe force (<span class="units-label">g</span>):
+          <input type="number" id="at-probe_force" value="300" step="any"></label>
+        <label>Max descent (mm):
+          <input type="number" id="at-max_travel" value="15" step="any"></label>
+        <label title="Fits stiffness per force band, verifies at 25/50/100% of probe force, and saves a gain schedule so Kp adapts to the force target. Set Probe force to your MAXIMUM working force.">
+          <input type="checkbox" id="at-sweep"> Sweep force range</label>
+        <button id="btn-at-start" class="btn btn-green">Start Auto-Tune</button>
+        <button id="btn-at-abort" class="btn btn-red" disabled>Abort</button>
+        <span id="at-status" class="hint">idle</span>
+      </div>
+      <div id="at-results" hidden>
+        <div id="at-results-text" class="at-results"></div>
+        <div class="form-row">
+          <button id="btn-at-load" class="btn btn-blue">Load into fields</button>
+          <button id="btn-at-apply" class="btn btn-green">Apply &amp; Save</button>
+          <span class="hint">Load = try live without saving &middot; Apply = write to config.json</span>
+        </div>
+      </div>
+      <div class="at-chart"><canvas id="atChart"></canvas></div>
+    </div>
+
+    <div class="panel">
+      <h2>Mechtrode Profiles
+        <span class="hint">one saved calibration per rod stiffness / diameter</span></h2>
+      <p class="hint">Freeze the current tuning (or the latest auto-tune result,
+        including its measured stiffness and probe curves) under a name, then
+        reload it when you chuck that mechtrode again. Loading applies the
+        settings live <b>and</b> saves them to config.json.</p>
+      <div class="form-row">
+        <label>Name:
+          <input type="text" id="profile-name" maxlength="60" placeholder="e.g. steel-3mm"></label>
+        <button id="btn-profile-save-at" class="btn btn-green" disabled>Save Auto-Tune Result</button>
+        <button id="btn-profile-save-cur" class="btn btn-blue">Save Current Tuning</button>
+        <span id="profile-status" class="hint"></span>
+      </div>
+      <table id="profile-table">
+        <thead><tr><th>Name</th><th>Saved</th><th>Source</th>
+          <th>Stiffness</th><th>Kp</th><th>Deadband</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- =============================== JOBS ================================ -->
+  <section id="tab-jobs" class="tab">
+    <div class="panel">
+      <h2>Upload Job</h2>
+      <p class="hint">Two formats are accepted:</p>
+      <ul class="hint format-list">
+        <li><b>CSV</b> — columns <code>X, Y, Target_Force_Units, Feedrate</code>;
+          one straight move per row (feedrate mm/min, force in calibrated units).</li>
+        <li><b>G-code</b> (<code>.gcode</code>/<code>.nc</code>/<code>.g</code>) —
+          standard G-code annotated with comment directives handled by the
+          job runner:
+          <ul>
+            <li><code>;FORCE=&lt;value&gt;</code> — set the Z-force target for
+              everything that follows</li>
+            <li><code>;WAIT_FORCE TIMEOUT=&lt;s&gt;</code> — wait until force is
+              within the deadband of the target (default timeout 60&nbsp;s;
+              job errors out + retracts on timeout)</li>
+            <li><code>;DWELL=&lt;s&gt;</code> — hold for N seconds while force
+              control keeps regulating</li>
+          </ul>
+          Example touch-down cycle:
+          <pre>;FORCE=0
+G1 Z45 F600          ; travel retracted
+G1 X25 Y30 F600
+G1 Z10 F300          ; park just above surface
+;FORCE=800
+;WAIT_FORCE TIMEOUT=30
+;DWELL=10
+;FORCE=0
+G91
+G1 Z5 F600           ; lift off
+G90</pre>
+          Consecutive moves are motion-planned together by Klipper, so paths
+          stay smooth. The accumulated force-control Z offset is cleared
+          automatically when the job ends.</li>
+      </ul>
+      <div class="form-row">
+        <input type="file" id="job-file" accept=".csv,.gcode,.nc,.g">
+        <button id="btn-upload" class="btn btn-blue">Upload</button>
+        <span id="upload-status" class="hint"></span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Job Files</h2>
+      <div class="form-row notes-row">
+        <label class="notes-label">Run notes
+          <span class="hint">(written into the run log header — material, rpm,
+            mechtrode, anything future-you needs)</span>
+          <textarea id="job-notes" rows="2"
+            placeholder="e.g. Al 6061 substrate, 4mm steel mechtrode, 3000 rpm, trial #4"></textarea>
+        </label>
+      </div>
+      <table id="job-table">
+        <thead><tr><th>File</th><th>Steps</th><th>Modified</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div class="form-row">
+        <label>Start at step:
+          <input type="number" id="job-start-step" value="1" min="1" step="1"></label>
+        <span class="hint">for resuming an interrupted job — the machine moves
+          directly to that step's coordinates; the last ;FORCE before it is applied</span>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Run Logs
+        <span class="hint">force data is captured automatically for every job run</span></h2>
+      <table id="log-table">
+        <thead><tr><th>File</th><th>Job</th><th>Date</th><th>Size</th><th>Notes</th><th></th></tr></thead>
+        <tbody></tbody>
+      </table>
+      <div id="log-viewer" hidden>
+        <h3 id="log-viewer-title"></h3>
+        <pre id="log-viewer-meta"></pre>
+        <div class="chart-lg panel"><canvas id="logChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="panel" id="job-status-panel">
+      <h2>Job Status</h2>
+      <div id="job-status-text" class="hint">No job running.</div>
+      <div id="job-error-text" class="job-error" hidden></div>
+      <div class="progress-track"><div id="job-progress" class="progress-fill"></div></div>
+      <div id="job-pause-box" class="pause-box" hidden>
+        <div id="job-pause-msg"></div>
+        <button id="btn-job-confirm" class="btn btn-green" disabled>Confirm</button>
+      </div>
+      <div class="form-row">
+        <button id="btn-pause" class="btn btn-blue" disabled>Pause Job</button>
+        <button id="btn-abort" class="btn btn-red" disabled>Abort Job</button>
+        <button id="btn-job-clear" class="btn btn-gray" hidden
+          title="Dismiss the finished/errored job from the status panel">Clear</button>
+        <span class="hint">Pause stops after the current segment, retracts, and waits
+          for Resume. Abort disables AUTO&nbsp;Z immediately, stops after the current
+          segment, then retracts Z. Use E-STOP for a hard halt.</span>
+      </div>
+    </div>
+  </section>
+
+  <script src="/static/js/app.js?v={{ asset_v }}"></script>
+</body>
+</html>

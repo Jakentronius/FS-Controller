@@ -1,0 +1,15 @@
+[Unit]
+Description=Friction Surfacing Dashboard
+After=network-online.target moonraker.service
+Wants=moonraker.service
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/load_cells/app
+ExecStart=/home/pi/load_cells/venv/bin/python app.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
