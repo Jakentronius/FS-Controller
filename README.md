@@ -1,6 +1,6 @@
 # FS Controller
 
-Web control panel for a hobby CNC (Genmitsu 3018-class) converted for
+Web control panel for a hobby CNC (Genmitsu 3020-PRO MAX V2) converted for
 micro friction surfacing, with closed-loop plunge-force control. Runs on
 the machine's Raspberry Pi alongside Klipper / Moonraker / Mainsail.
 
@@ -28,7 +28,7 @@ turns DXF/SVG drawings into annotated G-code jobs for this dashboard.
 
 | Part | Role |
 |---|---|
-| Genmitsu 3018-class frame | X/Y/Z motion |
+| Genmitsu 3020-PRO MAX V2 frame | X/Y/Z motion (Y homes at the far end) |
 | BTT SKR 1.4 Turbo + Klipper | Motion controller (driven via Moonraker HTTP) |
 | MKS SERVO42C closed-loop stepper | Z axis |
 | 4 × load cells + SparkFun Qwiic NAU7802 | Force measurement over I2C |
