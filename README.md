@@ -76,6 +76,10 @@ surface with the load cells and records it as the Z reference.
 **Calibration** — counts-per-unit scale factor (fit from a logged
 multi-mass test, or the two-point helper), abort retract, travel feeds,
 safety limits, rod-change settings, and surface mesh probing / saving.
+**Z sign** handles a machine whose Klipper +Z points down toward the
+stage: the dashboard, jobs, logs, mesh and every setting stay
+up-positive, and only the G-code sent to Klipper (Z words and gcode
+offsets) and the position read back are negated.
 
 **Tuning** — live PID fields (Kp, Ki, Kd, deadband, eval period, max
 step, averaging, ramp) with a step-response chart. **Auto-Tune** probes

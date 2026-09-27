@@ -126,6 +126,9 @@ function renderStatus(data, firstPoll) {
   } else {
     setPill("pill-job", "Job: none", "");
   }
+  const flipped = data.config.z_sign < 0;
+  setPill("pill-zsign", flipped ? "Z: FLIPPED (+Z down)" : "Z: normal (+Z up)",
+    flipped ? "warn" : "");
 
   // Readouts
   $("ro-force").innerText = fmt(data.force_units);
@@ -209,6 +212,7 @@ function renderStatus(data, firstPoll) {
   if (firstPoll) {
     $("input-target").value = data.force_target;
     fillCalForm(data.config);
+    fillZSign(data.config);
     fillTuneForm(data.config);
     refreshJobs();
   }
@@ -350,6 +354,29 @@ function fillCalForm(cfg) {
 
 document.querySelectorAll("#cal-form input").forEach((el) =>
   el.addEventListener("input", () => { calFormDirty = true; }));
+
+// Machine Z sign: its own control, never part of the bulk Save, and it
+// asks first — a wrong value sends every descent upward.
+function fillZSign(cfg) {
+  const sel = $("zsign-select");
+  if (document.activeElement === sel) return;
+  sel.value = cfg.z_sign < 0 ? "-1" : "1";
+}
+
+$("zsign-apply").addEventListener("click", async () => {
+  const v = $("zsign-select").value;
+  const label = v === "-1" ? "+Z moves DOWN toward the stage (flipped)"
+                           : "+Z moves UP (conventional)";
+  if (!confirm(`Set machine Z sign to: ${label}?\n\nWrong = descents go up ` +
+               `and retracts go down. Only change this after the machine ` +
+               `itself changed.`)) {
+    return;
+  }
+  const res = await post("/api/calibration", { z_sign: parseFloat(v) });
+  $("zsign-status").innerText =
+    res.status === "ok" ? "Applied ✓" : `Error: ${res.message}`;
+  setTimeout(() => { $("zsign-status").innerText = ""; }, 3000);
+});
 
 $("cal-form").addEventListener("submit", async (e) => {
   e.preventDefault();

@@ -17,6 +17,7 @@
         <span id="pill-autoz" class="pill">AUTO Z: &hellip;</span>
         <span id="pill-log" class="pill">Log: &hellip;</span>
         <span id="pill-job" class="pill">Job: &hellip;</span>
+        <span id="pill-zsign" class="pill">Z: &hellip;</span>
       </div>
     </div>
     <div class="header-btns">
@@ -266,6 +267,21 @@
         </div>
       </div>
     </form>
+      <div class="form-row" id="zsign-row">
+        <label>Machine Z sign:
+          <select id="zsign-select">
+            <option value="1">Klipper +Z moves UP (conventional)</option>
+            <option value="-1">Klipper +Z moves DOWN toward the stage (this rig)</option>
+          </select></label>
+        <button type="button" class="btn" id="zsign-apply">Apply Z sign</button>
+        <span id="zsign-status" class="hint"></span>
+      </div>
+      <p class="hint"><b>Machine Z sign</b> is deliberately separate from the Save
+        button above and asks for confirmation: it says which way the machine's
+        Klipper +Z physically moves. Everything in this dashboard (jobs, logs,
+        mesh, touch-off, Z floor, Park Z, jog) stays up-positive; only the
+        commands sent to Klipper and the position read back are negated. Getting
+        it wrong makes every descent go up and every retract go down.</p>
 
     <div class="panel">
       <h2>Surface Mesh

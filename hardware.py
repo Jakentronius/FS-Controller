@@ -87,6 +87,13 @@ DEFAULT_CONFIG = {
     # descend below (set just above the build plate).
     "max_force": 0.0,
     "z_floor": -1000.0,
+    # Z sign convention of the machine. 1 = Klipper +Z is up (normal).
+    # -1 = Klipper +Z points DOWN toward the stage (the rig since
+    # 2026-09-20: home switch at Z=+50 is the bottom of travel). The
+    # dashboard, jobs, logs, mesh, touch-off and every setting here always
+    # use up-positive Z; the flip happens only on the wire to Klipper
+    # (outgoing Z words / offsets, incoming position and limits).
+    "z_sign": 1.0,
     # Last tare offset (raw ADC counts), persisted so restarts keep the
     # zero. Written by tare()/clear_tare(), not meant for hand-editing.
     "tare_offset": 0.0,
@@ -302,6 +309,35 @@ def _cross_depth(points, level, rising):
         if lo <= level <= hi and f1 != f0:
             return d0 + (level - f0) * (d1 - d0) / (f1 - f0)
     return None
+
+
+# Z sign flip at the Klipper boundary (see DEFAULT_CONFIG["z_sign"]).
+# Only motion commands and gcode offsets carry a Z word worth flipping;
+# everything else (G28 Z, macro names, M117 text) is passed untouched.
+_Z_FLIP_CMD_RE = re.compile(r"^\s*(?:G0|G1|G2|G3|G92|SET_GCODE_OFFSET)\b",
+                            re.IGNORECASE)
+_Z_WORD_RE = re.compile(r"\b(Z_ADJUST=|Z=|Z)([-+]?(?:\d+\.?\d*|\.\d+))")
+
+
+def _negate_num(text):
+    if text.startswith("-"):
+        return text[1:]
+    if text.startswith("+"):
+        return "-" + text[1:]
+    return "-" + text
+
+
+def flip_z_script(script):
+    """Negate every Z coordinate / offset in a G-code script. A pure sign
+    flip is correct for both absolute (G90) and relative (G91) moves."""
+    out = []
+    for line in script.split("\n"):
+        code, sep, comment = line.partition(";")
+        if _Z_FLIP_CMD_RE.match(code):
+            code = _Z_WORD_RE.sub(
+                lambda m: m.group(1) + _negate_num(m.group(2)), code)
+        out.append(code + sep + comment)
+    return "\n".join(out)
 
 
 def load_config():
@@ -787,6 +823,9 @@ class Machine:
                             clean.append([f, s])
                     clean.sort()
                     self.config[key] = clean
+                elif key == "z_sign":
+                    self.config[key] = (-1.0 if float(updates[key]) < 0
+                                        else 1.0)
                 else:
                     self.config[key] = float(updates[key])
         # The configured target is also the active one: tuning the target
@@ -1070,10 +1109,15 @@ class Machine:
     # ------------------------------------------------------------------ #
     # Moonraker helpers
 
+    def _z_sign(self):
+        return -1.0 if float(self.config.get("z_sign", 1.0)) < 0 else 1.0
+
     def _gcode(self, script, timeout=5.0):
         """Send a G-code script. Moonraker blocks until the script completes.
         On failure the underlying reason (Klipper's own error text when
         available) is kept in _gcode_error for _fail_why()."""
+        if self._z_sign() < 0:
+            script = flip_z_script(script)
         try:
             resp = self._session.post(
                 f"{MOONRAKER_URL}/printer/gcode/script",
@@ -1269,8 +1313,10 @@ class Machine:
                 timeout=2.0)
             if resp.status_code == 200:
                 th = resp.json()["result"]["status"]["toolhead"]
-                return {"min": th["axis_minimum"][:3],
-                        "max": th["axis_maximum"][:3],
+                lo, hi = list(th["axis_minimum"][:3]), list(th["axis_maximum"][:3])
+                if self._z_sign() < 0:
+                    lo[2], hi[2] = -hi[2], -lo[2]
+                return {"min": lo, "max": hi,
                         "max_velocity": th.get("max_velocity"),
                         "max_accel": th.get("max_accel")}
         except (requests.RequestException, KeyError, ValueError):
@@ -1331,10 +1377,13 @@ class Machine:
                     # present.
                     live = status.get("motion_report",
                                       {}).get("live_position")
-                    self.position = (list(live[:3]) if live
-                                     else status["toolhead"]["position"][:3])
+                    zs = self._z_sign()
+                    pos = list(live[:3]) if live \
+                        else list(status["toolhead"]["position"][:3])
+                    pos[2] = pos[2] * zs + 0.0      # + 0.0 avoids "-0.0"
+                    self.position = pos
                     origin = status["gcode_move"]["homing_origin"]
-                    self.z_offset = origin[2]
+                    self.z_offset = origin[2] * zs + 0.0
                     self.xy_offset = [origin[0], origin[1]]
                 else:
                     self.klipper_state = "offline"

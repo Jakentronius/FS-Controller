@@ -208,7 +208,7 @@ code { background: #1a1a1a; padding: 2px 5px; border-radius: 3px; }
 
 label { font-size: 0.88rem; color: #ccc; }
 
-input[type="number"], input[type="text"] {
+input[type="number"], input[type="text"], #zsign-select {
   background: #1a1a1a;
   border: 1px solid #555;
   color: #fff;
