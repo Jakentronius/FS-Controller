@@ -106,6 +106,7 @@ directives handled by the job runner:
 | `;WAIT_FORCE TIMEOUT=<s>` | Creep to first contact, then wait until force is within the deadband |
 | `;DWELL=<s>` | Hold while force control keeps regulating (use instead of `G4`) |
 | `;ZREF=SURFACE` | Job Z coordinates are relative to the last touch-off (required by FS CAM output) |
+| `;CONTROL=OFF` / `;CONTROL=ON` | Suspend / resume the force controller (position mode: authored Z words drive the plunge; the max-force fault still applies) |
 
 ```gcode
 ;FORCE=0
@@ -118,6 +119,12 @@ G1 Z10 F300            ; park above surface
 ;FORCE=0
 G1 Z45 F600
 ```
+
+`tools/hatch_gcode.py` generates meander and crosshatch test patches in
+this dialect (length/width, stepover, layers and per-layer rotation,
+feed, force in grams; `--svg` writes a toolpath preview). Force 0 selects
+position mode: `;CONTROL=OFF` and a fixed XY-travel-to-Z-plunge ratio
+(`--xy-per-z`). `tools/hatch_gui.py` is a tkinter front end for it.
 
 Long moves are sliced into ~0.15 s segments so force corrections can ride
 along mid-move; `G4`, `G28` and `SET_GCODE_OFFSET` inside a job are

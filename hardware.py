@@ -371,10 +371,14 @@ JOB_EXTENSIONS = (".csv", ".gcode", ".nc", ".g")
 #   ;FORCE=<units>              set the Z-force control target
 #   ;WAIT_FORCE [TIMEOUT=<s>]   block until force is within deadband of target
 #   ;DWELL=<s>                  hold for N seconds while force control runs
+#   ;CONTROL=OFF|ON             suspend / resume the force controller (position
+#                               mode: authored Z words drive the plunge; the
+#                               max_force fault still applies)
 _RE_FORCE = re.compile(r"^force\s*=\s*(-?\d+(?:\.\d+)?)$", re.I)
 _RE_DWELL = re.compile(r"^dwell\s*=\s*(\d+(?:\.\d+)?)$", re.I)
 _RE_WAIT = re.compile(r"^wait_force(?:\s+timeout\s*=\s*(\d+(?:\.\d+)?))?$", re.I)
 _RE_ZREF = re.compile(r"^zref\s*=\s*surface$", re.I)
+_RE_CONTROL = re.compile(r"^control\s*=\s*(on|off)$", re.I)
 
 WAIT_FORCE_DEFAULT_TIMEOUT = 60.0
 
@@ -422,6 +426,14 @@ def _parse_directive(line):
         # surface (Z0 = surface). Requires a touch-off before running.
         return {"type": "zref", "mode": "surface",
                 "desc": "surface-referenced Z frame"}
+    m = _RE_CONTROL.match(body)
+    if m:
+        # Position mode: with the PID off, a zero target no longer reads
+        # contact load as an error to unload, so authored Z words can
+        # drive a commanded plunge (e.g. a fixed XY:Z ratio).
+        on = m.group(1).lower() == "on"
+        return {"type": "control", "enabled": on,
+                "desc": "force control " + ("on" if on else "off")}
     return None
 
 
@@ -730,6 +742,7 @@ class Machine:
         # Active Z-force control
         self.control_enabled = False
         self.force_target = float(self.config["force_target"])
+        self._job_control = True   # False while a job runs ;CONTROL=OFF
         self._last_adjust = 0.0
         self.pid_state = {}
         # True while a job motion segment holds Klipper's gcode queue:
@@ -2912,7 +2925,7 @@ class Machine:
                     f"G90\nG1 Z{approach_cmd:.3f} F300\nM400",
                     timeout=120.0):
                 return self._fail_why("Re-approach move failed")
-            self.control_enabled = True
+            self.control_enabled = getattr(self, "_job_control", True)
             deadline = time.time() + 120.0
             deadband = float(self.config["force_deadband"])
             while not self._job_abort.is_set():
@@ -2993,7 +3006,7 @@ class Machine:
             if not self._gcode(
                     f"G90\nG1 Z{target_cmd:.3f} F300\nM400", timeout=120.0):
                 return self._fail_why("Resume move failed")
-            self.control_enabled = True
+            self.control_enabled = getattr(self, "_job_control", True)
             if engaged:
                 pause["message"] = (f"Re-engaging to force target "
                                     f"{self.force_target:g}")
@@ -3160,6 +3173,11 @@ class Machine:
 
         if step["type"] == "zref":
             return None   # frame applied at job start
+
+        if step["type"] == "control":
+            self._job_control = step["enabled"]
+            self.control_enabled = step["enabled"]
+            return None
 
         if step["type"] == "move":
             return self._run_move_streamed(step)
@@ -3551,7 +3569,13 @@ class Machine:
                 self.force_target = resume_force
 
             self._rod_baseline = None
-            self.control_enabled = True
+            # Position-mode jobs (;CONTROL=OFF) keep the PID off; a start
+            # mid-job inherits whatever the skipped steps declared.
+            self._job_control = True
+            for s in steps[:start_step - 1]:
+                if s["type"] == "control":
+                    self._job_control = s["enabled"]
+            self.control_enabled = self._job_control
 
             for i, step in enumerate(steps[start_step - 1:],
                                      start=start_step - 1):
