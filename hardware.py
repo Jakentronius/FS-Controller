@@ -14,6 +14,8 @@ import time
 
 import requests
 
+import spindle
+
 try:
     import qwiic_nau7802
     QWIIC_AVAILABLE = True
@@ -715,6 +717,8 @@ class Machine:
         self.fault = None
         self.raw_adc = 0
         self.sample_seq = 0      # bumps once per NAU7802 reading
+        # Spindle VFD (Modbus over /dev/ttyUSB0), Stage A: speed only
+        self.spindle = spindle.SpindleController()
         # Tare survives app restarts — an in-memory-only tare once made
         # a parked job read the platform's static weight as ~950 g of
         # phantom force and back away from touch-down until timeout.
@@ -794,6 +798,7 @@ class Machine:
         for fn in (self._sensor_loop, self._telemetry_loop,
                    self._control_loop, self._watchdog_loop):
             threading.Thread(target=fn, daemon=True).start()
+        self.spindle.start()
 
     def shutdown(self):
         self._running = False
@@ -1322,6 +1327,9 @@ class Machine:
         # Without this, a job waiting at a rod-change/pause confirmation
         # would keep waiting forever after the firmware halt.
         self._job_abort.set()
+        # Spindle setpoint to 0 as well (best effort, off-thread so a slow
+        # or dead serial link never delays the Klipper halt).
+        threading.Thread(target=self.spindle.stop, daemon=True).start()
         try:
             self._session.post(
                 f"{MOONRAKER_URL}/printer/emergency_stop", timeout=2.0)

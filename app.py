@@ -53,6 +53,7 @@ def api_status():
         "fault": machine.fault,
         "job": machine.job,
         "config": machine.config,
+        "spindle": machine.spindle.status(),
         # points can grow to a few hundred pairs; fetch them from
         # /api/autotune instead of shipping them at 2 Hz
         "autotune": {k: v for k, v in machine.autotune.items()
@@ -477,6 +478,34 @@ def api_jobs_clear():
     ok, msg = machine.clear_job()
     return jsonify({"status": "ok" if ok else "error",
                     "message": msg}), 200 if ok else 400
+
+
+# ---------------------------------------------------------------------- #
+# Spindle (VFD over Modbus, Stage A: speed setpoint only)
+
+@app.get("/api/spindle")
+def api_spindle():
+    return jsonify(machine.spindle.status())
+
+
+@app.post("/api/spindle/set")
+def api_spindle_set():
+    data = request.get_json(force=True, silent=True) or {}
+    if "rpm" in data:
+        ok, msg = machine.spindle.set_rpm(data["rpm"])
+    elif "hz" in data:
+        ok, msg = machine.spindle.set_hz(data["hz"])
+    else:
+        ok, msg = False, "Give rpm or hz"
+    return jsonify({"status": "ok" if ok else "error", "message": msg}), \
+        200 if ok else 400
+
+
+@app.post("/api/spindle/stop")
+def api_spindle_stop():
+    ok, msg = machine.spindle.stop()
+    return jsonify({"status": "ok" if ok else "error", "message": msg}), \
+        200 if ok else 400
 
 
 @app.post("/api/estop")

@@ -129,6 +129,7 @@ function renderStatus(data, firstPoll) {
   const flipped = data.config.z_sign < 0;
   setPill("pill-zsign", flipped ? "Z: FLIPPED (+Z down)" : "Z: normal (+Z up)",
     flipped ? "warn" : "");
+  renderSpindle(data.spindle || {}, firstPoll);
 
   // Readouts
   $("ro-force").innerText = fmt(data.force_units);
@@ -222,6 +223,75 @@ function fmt(v) {
   if (v === null || v === undefined) return "--";
   return Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(2);
 }
+
+// ---------------------------------------------------------------------- //
+// Spindle
+
+function renderSpindle(sp, firstPoll) {
+  if (!sp.available) {
+    setPill("pill-spindle", "Spindle: OFFLINE", "bad");
+    $("sp-mode").innerText = `Drive not reachable on ${sp.port || "?"}: ${sp.error || "no data yet"}`;
+    ["ro-sp-rpm", "ro-sp-hz", "ro-sp-set", "ro-sp-a", "ro-sp-dc", "ro-sp-temp"]
+      .forEach((id) => { $(id).innerText = "--"; });
+    return;
+  }
+  const running = sp.running;
+  setPill("pill-spindle",
+    running ? `Spindle: ${sp.rpm.toFixed(0)} rpm` : `Spindle: stopped (set ${sp.setpoint_rpm.toFixed(0)})`,
+    running ? "warn" : "");
+  $("ro-sp-rpm").innerText = sp.rpm.toFixed(0);
+  $("ro-sp-hz").innerText = sp.freq_hz.toFixed(1);
+  $("ro-sp-set").innerText = `${sp.setpoint_rpm.toFixed(0)} / ${sp.setpoint_hz.toFixed(1)}`;
+  $("ro-sp-a").innerText = sp.current_a.toFixed(2);
+  $("ro-sp-dc").innerText = sp.dc_bus_v.toFixed(0);
+  $("ro-sp-temp").innerText = sp.temp_c.toFixed(1);
+  const badge = $("sp-run");
+  badge.innerText = running ? "running" : "stopped";
+  badge.className = "badge " + (running ? "badge-warn" : "badge-ok");
+  const ok = sp.stage_a;
+  $("sp-mode").innerText =
+    `Setpoint source: ${sp.freq_source_name} (F002 = ${sp.freq_source})` +
+    ` — run/stop: ${sp.run_source_name} (F001 = ${sp.run_source})` +
+    ` — limits ${sp.min_hz}..${sp.max_hz} Hz` +
+    ` — ramps ${sp.accel_s} s up / ${sp.decel_s} s down` +
+    (ok ? " — Stage A ready" : " — NOT under serial control: set F002 = 2 on the keypad");
+  $("sp-mode").style.color = ok ? "" : "#ffb74d";
+  if (firstPoll) {
+    $("sp-rpm").value = sp.setpoint_rpm.toFixed(0);
+    $("sp-hz").value = sp.setpoint_hz.toFixed(1);
+  }
+}
+
+$("sp-rpm").addEventListener("input", () => {
+  const v = parseFloat($("sp-rpm").value);
+  $("sp-hz").value = isNaN(v) ? "" : (v / 60).toFixed(1);
+});
+$("sp-hz").addEventListener("input", () => {
+  const v = parseFloat($("sp-hz").value);
+  $("sp-rpm").value = isNaN(v) ? "" : (v * 60).toFixed(0);
+});
+document.querySelectorAll(".btn-sp-preset").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    $("sp-rpm").value = btn.dataset.rpm;
+    $("sp-hz").value = (parseFloat(btn.dataset.rpm) / 60).toFixed(1);
+  });
+});
+
+async function spindleCmd(url, body) {
+  const res = await post(url, body);
+  $("sp-status").innerText = res.message || (res.status === "ok" ? "OK" : "Error");
+  $("sp-status").style.color = res.status === "ok" ? "" : "#ff6b6b";
+}
+
+$("btn-sp-set").addEventListener("click", () => {
+  const rpm = parseFloat($("sp-rpm").value);
+  if (isNaN(rpm) || rpm < 0) {
+    $("sp-status").innerText = "Enter a speed in rpm";
+    return;
+  }
+  spindleCmd("/api/spindle/set", { rpm });
+});
+$("btn-sp-stop").addEventListener("click", () => spindleCmd("/api/spindle/stop", {}));
 
 function setPill(id, text, kind) {
   const el = $(id);

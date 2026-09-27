@@ -32,6 +32,7 @@ turns DXF/SVG drawings into annotated G-code jobs for this dashboard.
 | BTT SKR 1.4 Turbo + Klipper | Motion controller (driven via Moonraker HTTP) |
 | MKS SERVO42C closed-loop stepper | Z axis |
 | 4 × load cells + SparkFun Qwiic NAU7802 | Force measurement over I2C |
+| Gpenny spindle + H100 VFD, DSD TECH SH-U11F RS485 | Spindle speed over Modbus RTU |
 | Raspberry Pi | Klipper, Moonraker, Mainsail and this dashboard |
 
 ## Installation
@@ -88,6 +89,14 @@ step, averaging, ramp) with a step-response chart. **Auto-Tune** probes
 contact stiffness with a rigid non-spinning rod and derives conservative
 gains; **Sweep** mode fits stiffness per force band and saves a gain
 schedule. Save tunings as named **mechtrode profiles**.
+
+**Spindle** — sets the Gpenny spindle's speed through its H100 VFD over
+RS485 Modbus (the isolated USB adapter on `/dev/ttyUSB0`), with live
+rpm, output frequency, current, DC bus and heatsink readouts. Stage A
+control: the drive must have F002 = 2 (setpoint from the serial port)
+while RUN/STOP stay on the VFD keypad, so the panel STOP key always
+works. E-STOP also sends a 0 Hz setpoint. Details and the drive
+parameter map live in the `gpenny-vfd-logger` project.
 
 **Jobs** — upload, preflight-check (bounds, Z floor, max force, feeds),
 run, pause/resume, abort, or start at a given step. Every run is logged

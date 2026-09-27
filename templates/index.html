@@ -18,6 +18,7 @@
         <span id="pill-log" class="pill">Log: &hellip;</span>
         <span id="pill-job" class="pill">Job: &hellip;</span>
         <span id="pill-zsign" class="pill">Z: &hellip;</span>
+        <span id="pill-spindle" class="pill">Spindle: &hellip;</span>
       </div>
     </div>
     <div class="header-btns">
@@ -36,6 +37,7 @@
     <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
     <button class="tab-btn" data-tab="calibration">Calibration</button>
     <button class="tab-btn" data-tab="tuning">Tuning</button>
+    <button class="tab-btn" data-tab="spindle">Spindle</button>
     <button class="tab-btn" data-tab="jobs">Jobs</button>
   </nav>
 
@@ -443,6 +445,65 @@
   </section>
 
   <!-- =============================== JOBS ================================ -->
+  <section id="tab-spindle" class="tab">
+    <div class="panel readouts">
+      <div class="readout">
+        <span class="readout-label">Spindle (rpm) <span id="sp-run" class="badge">?</span></span>
+        <span id="ro-sp-rpm" class="readout-value accent">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Output (Hz)</span>
+        <span id="ro-sp-hz" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Setpoint (rpm / Hz)</span>
+        <span id="ro-sp-set" class="readout-value">--</span>
+      </div>
+      <div class="readout-divider"></div>
+      <div class="readout">
+        <span class="readout-label">Current (A)</span>
+        <span id="ro-sp-a" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">DC bus (V)</span>
+        <span id="ro-sp-dc" class="readout-value">--</span>
+      </div>
+      <div class="readout">
+        <span class="readout-label">Heatsink (&deg;C)</span>
+        <span id="ro-sp-temp" class="readout-value">--</span>
+      </div>
+    </div>
+
+    <div class="panel controls">
+      <label>Speed (rpm):
+        <input type="number" id="sp-rpm" step="1" min="0"></label>
+      <label>= Hz:
+        <input type="number" id="sp-hz" step="0.1" min="0"></label>
+      <button id="btn-sp-set" class="btn btn-blue">Set Speed</button>
+      <span class="spacer"></span>
+      <button class="btn btn-gray btn-sp-preset" data-rpm="3000">3000</button>
+      <button class="btn btn-gray btn-sp-preset" data-rpm="6000">6000</button>
+      <button class="btn btn-gray btn-sp-preset" data-rpm="9000">9000</button>
+      <button class="btn btn-gray btn-sp-preset" data-rpm="12000">12000</button>
+      <span class="spacer"></span>
+      <button id="btn-sp-stop" class="btn btn-red">Ramp to 0</button>
+      <span id="sp-status" class="hint"></span>
+    </div>
+
+    <div class="panel">
+      <h2>Drive</h2>
+      <p id="sp-mode" class="hint">&hellip;</p>
+      <p class="hint">Stage A control: this tab writes the VFD's frequency setpoint over
+        RS485, but <b>RUN and STOP stay on the VFD keypad</b>. Press RUN on the panel
+        for the spindle to follow the setpoint, and the panel STOP key always stops
+        it. Presets only fill the fields; press <b>Set Speed</b> to send. The drive
+        ramps at its own accel/decel time (50&nbsp;s over the full 0&ndash;400&nbsp;Hz, so
+        a 150&nbsp;Hz change takes about 19&nbsp;s). The setpoint lives in the drive's
+        RAM and reads 0 after a VFD power cycle. E-STOP also sends a 0&nbsp;Hz setpoint.
+        This spindle is 2-pole, so rpm = 60 &times; Hz and 150&nbsp;Hz = 9000&nbsp;rpm.</p>
+    </div>
+  </section>
+
   <section id="tab-jobs" class="tab">
     <div class="panel">
       <h2>Upload Job</h2>
