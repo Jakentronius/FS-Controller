@@ -84,6 +84,27 @@ def api_log_stop():
     return jsonify({"status": "ok"})
 
 
+@app.get("/api/samples")
+def api_samples():
+    """N fresh raw ADC samples plus summary stats, for calibration
+    captures (tools/capture_adc.py). ?n=100 by default, max 5000."""
+    n = max(1, min(request.args.get("n", 100, type=int), 5000))
+    samples = machine.collect_samples(n, timeout=max(5.0, n / 40.0))
+    if not samples:
+        return jsonify({"status": "error",
+                        "message": machine.sensor_error
+                        or "sensor unavailable"}), 503
+    mean = sum(samples) / len(samples)
+    var = sum((v - mean) ** 2 for v in samples) / max(1, len(samples) - 1)
+    return jsonify({"status": "ok", "n": len(samples), "mean": mean,
+                    "std": var ** 0.5, "min": min(samples),
+                    "max": max(samples),
+                    "tare_offset": machine.tare_offset,
+                    "counts_per_unit": machine.config["counts_per_unit"],
+                    "units_label": machine.config["units_label"],
+                    "samples": samples})
+
+
 @app.post("/api/tare")
 def api_tare():
     if not machine.tare():

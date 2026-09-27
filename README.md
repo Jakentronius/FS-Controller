@@ -74,7 +74,9 @@ surface with the load cells and records it as the Z reference.
 **Zero XY Here** sets a work origin so jobs are authored around `X0 Y0`.
 
 **Calibration** — counts-per-unit scale factor (fit from a logged
-multi-mass test, or the two-point helper), abort retract, travel feeds,
+multi-mass test, the two-point helper, or `tools/capture_adc.py`, which
+averages 100 fresh samples per known load, appends them to a CSV and
+fits the factor), abort retract, travel feeds,
 safety limits, rod-change settings, and surface mesh probing / saving.
 **Z sign** handles a machine whose Klipper +Z points down toward the
 stage: the dashboard, jobs, logs, mesh and every setting stay

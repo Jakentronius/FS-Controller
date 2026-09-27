@@ -702,6 +702,7 @@ class Machine:
         # Safety fault latch (max force exceeded, sensor stall, ...)
         self.fault = None
         self.raw_adc = 0
+        self.sample_seq = 0      # bumps once per NAU7802 reading
         # Tare survives app restarts — an in-memory-only tare once made
         # a parked job read the platform's static weight as ~950 g of
         # phantom force and back away from touch-down until timeout.
@@ -851,6 +852,26 @@ class Machine:
             save_config(self.config)
         return True
 
+    def collect_samples(self, n=100, timeout=10.0):
+        """Block until n fresh ADC readings have arrived (one per
+        acquisition-thread sample, never a repeat) and return them raw.
+        None when the sensor is unavailable. Used by /api/samples for
+        load-cell calibration captures."""
+        n = max(1, min(int(n), 5000))
+        if not self.sensor_ok:
+            return None
+        samples = []
+        last_seq = self.sample_seq
+        deadline = time.time() + timeout
+        while len(samples) < n and time.time() < deadline:
+            seq = self.sample_seq
+            if seq != last_seq:
+                last_seq = seq
+                samples.append(self.raw_adc)
+            else:
+                time.sleep(0.002)
+        return samples
+
     def clear_tare(self):
         self.tare_offset = 0.0
         self.config["tare_offset"] = 0.0
@@ -880,6 +901,7 @@ class Machine:
             if scale.available():
                 raw = scale.get_reading()
                 self.raw_adc = raw
+                self.sample_seq += 1
                 self.force_history.append(self.force_units(raw))
                 self._last_sample_t = time.time()
                 # Auto-recover the health flag when samples resume after a
