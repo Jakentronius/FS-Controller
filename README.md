@@ -101,6 +101,15 @@ parameter map live in the `gpenny-vfd-logger` project.
 **Jobs** — upload, preflight-check (bounds, Z floor, max force, feeds),
 run, pause/resume, abort, or start at a given step. Every run is logged
 to `logs/run_<job>_<timestamp>.csv` with your **Run notes** in the header.
+**Probe + Run** first traces the job's engaged toolpath with the spindle
+off, tapping the surface every *interval* mm (taps within half an
+interval of an earlier one are skipped, so a dense meander thins to one
+tap per cell). The taps are stored as a **path mesh** (heights
+interpolated from the nearest taps, feedforward switched on), the first
+tap becomes the touch-off reference at the engagement point, the head
+returns to where it started and the job waits for you to start the
+spindle and press **Start Job**. **Probe Only** does the same without
+running the job.
 
 ## Job files
 
@@ -134,6 +143,10 @@ this dialect (length/width, stepover, layers and per-layer rotation,
 feed, force in grams; `--svg` writes a toolpath preview). Force 0 selects
 position mode: `;CONTROL=OFF` and a fixed XY-travel-to-Z-plunge ratio
 (`--xy-per-z`). `tools/hatch_gui.py` is a tkinter front end for it.
+`tools/plot_run.py <run log>` turns a run log into a PNG of the tool path
+coloured by contact pressure over the mechtrode face (`--diameter`,
+default 1.98 mm) plus pressure and Z over time, and files it with a copy
+of the job and the log under `tests/output_<job>/` (needs matplotlib).
 
 Long moves are sliced into ~0.15 s segments so force corrections can ride
 along mid-move; `G4`, `G28` and `SET_GCODE_OFFSET` inside a job are

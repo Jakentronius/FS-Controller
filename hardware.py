@@ -185,6 +185,23 @@ MESH_LIMITS = {
     "settle_s": (0.05, 2.0),
 }
 
+# Path-traced mesh: instead of a grid around a point, tap along the
+# toolpath a job is about to surface, one contact per `interval` mm of
+# engaged travel. Probe mechanics (steps, feeds, settle) are shared with
+# the grid mesh; these are the path-specific knobs.
+PATH_MESH_DEFAULTS = {
+    "interval": 5.0,         # spacing of taps along the path (mm)
+    "clearance": 1.0,        # travel height above the highest contact (mm)
+    "max_travel": 15.0,      # max descent below the start height (mm)
+    "max_points": 200,
+}
+PATH_MESH_LIMITS = {
+    "interval": (0.5, 100.0),
+    "clearance": (0.2, 10.0),
+    "max_travel": (1.0, 40.0),
+    "max_points": (1, 400),
+}
+
 
 # Single-point touch-off: rough tool length / starting height after a
 # mechtrode swap or wear.
@@ -216,15 +233,34 @@ def load_touchoff():
         return None
 
 
+def mesh_valid(m):
+    """True for a well-formed grid mesh (xs/ys/z) or path mesh (points)."""
+    if not isinstance(m, dict):
+        return False
+    if m.get("kind") == "path":
+        pts = m.get("points")
+        return bool(pts) and all(len(p) == 3 for p in pts)
+    return bool(m.get("xs") and m.get("ys") and m.get("z"))
+
+
 def load_mesh():
     try:
         with open(MESH_PATH) as f:
             m = json.load(f)
-        if m.get("xs") and m.get("ys") and m.get("z"):
+        if mesh_valid(m):
             return m
     except (OSError, ValueError):
         pass
     return None
+
+
+def mesh_bbox(mesh):
+    """((xmin, xmax), (ymin, ymax)) covered by a grid or path mesh."""
+    if mesh.get("kind") == "path":
+        xs = [p[0] for p in mesh["points"]]
+        ys = [p[1] for p in mesh["points"]]
+        return (min(xs), max(xs)), (min(ys), max(ys))
+    return (mesh["xs"][0], mesh["xs"][-1]), (mesh["ys"][0], mesh["ys"][-1])
 
 
 def save_mesh(mesh):
@@ -232,9 +268,24 @@ def save_mesh(mesh):
         json.dump(mesh, f, indent=2)
 
 
+def _path_interp(points, x, y, k=4):
+    """Inverse-distance-weighted Z of the k nearest path samples. The
+    tool follows the very path that was tapped, so the nearest samples
+    bracket it; far outside the path this degrades to the nearest
+    points, the equivalent of the grid's edge clamp."""
+    near = sorted(((px - x) ** 2 + (py - y) ** 2, pz)
+                  for px, py, pz in points)[:k]
+    if near[0][0] < 1e-8:
+        return near[0][1]
+    ws = [1.0 / d2 for d2, _ in near]
+    return sum(w * z for w, (_, z) in zip(ws, near)) / sum(ws)
+
+
 def _mesh_interp(mesh, x, y):
-    """Bilinear interpolation of the mesh surface Z at (x, y); positions
-    outside the grid clamp to the nearest edge."""
+    """Surface Z of the mesh at (x, y): bilinear on a grid mesh (clamped
+    to the grid edge), inverse-distance on a path mesh."""
+    if mesh.get("kind") == "path":
+        return _path_interp(mesh["points"], x, y)
     xs, ys, zg = mesh["xs"], mesh["ys"], mesh["z"]
     x = min(max(x, xs[0]), xs[-1])
     y = min(max(y, ys[0]), ys[-1])
@@ -671,15 +722,19 @@ def validate_job(steps, limits=None, config=None, mesh=None,
                       f"below the Z floor {z_floor:g} (Calibration tab)")
 
     if mesh and ("x" in lo or "y" in lo):
-        xs, ys = mesh["xs"], mesh["ys"]
-        outside = (("x" in lo and (lo["x"] + off["x"] < xs[0]
-                                   or hi["x"] + off["x"] > xs[-1]))
-                   or ("y" in lo and (lo["y"] + off["y"] < ys[0]
-                                      or hi["y"] + off["y"] > ys[-1])))
+        (mx0, mx1), (my0, my1) = mesh_bbox(mesh)
+        # A path mesh thins taps to one per half-interval, so the path
+        # may legitimately poke that far past the outermost tap.
+        tol = (float(mesh.get("interval", 0.0)) / 2.0
+               if mesh.get("kind") == "path" else 0.0) + 1e-6
+        outside = (("x" in lo and (lo["x"] + off["x"] < mx0 - tol
+                                   or hi["x"] + off["x"] > mx1 + tol))
+                   or ("y" in lo and (lo["y"] + off["y"] < my0 - tol
+                                      or hi["y"] + off["y"] > my1 + tol)))
         if outside:
             warnings.append(
                 "toolpath leaves the probed mesh region — the mesh "
-                "feedforward clamps to the grid edge out there")
+                "feedforward clamps to the nearest probed height out there")
 
     if unknown_rel:
         warnings.append("relative (G91) moves before any absolute "
@@ -691,6 +746,108 @@ def validate_job(steps, limits=None, config=None, mesh=None,
         "bbox": {a: [round(lo[a], 3), round(hi[a], 3)] for a in lo},
         "max_feed": max_feed,
     }
+
+
+def job_path_points(steps, interval, xy_offset=(0.0, 0.0),
+                    max_points=200):
+    """Where a job's tool will touch the work, as tap positions for a
+    path-traced mesh: the XY polyline of every move made while engaged
+    (a positive ;FORCE target, or position mode after ;CONTROL=OFF),
+    resampled every `interval` mm of travel. Samples closer than half an
+    interval to an earlier one are dropped, so a dense meander collapses
+    to roughly one tap per interval-sized cell. Returns (points, note):
+    points are MACHINE coordinates [[x, y], ...] in path order.
+    Raises ValueError when the job has no XY motion or too many taps."""
+    absolute = True
+    pos = {"x": None, "y": None, "z": None}
+    force_active = 0.0
+    control_on = True
+    engaged_segs, all_segs = [], []
+    for step in steps:
+        if step["type"] == "force":
+            force_active = step["value"]
+            continue
+        if step["type"] == "control":
+            control_on = step["enabled"]
+            continue
+        if step["type"] != "move":
+            continue
+        for line in step["lines"]:
+            u = line.upper()
+            if u.startswith("G90"):
+                absolute = True
+                continue
+            if u.startswith("G91"):
+                absolute = False
+                continue
+            if u.startswith("G28"):
+                pos = {"x": None, "y": None, "z": None}
+                continue
+            if not (_RE_LINEAR.match(u) or _RE_ARC.match(u)):
+                continue
+            prev = dict(pos)
+            for axis, val in _RE_WORD.findall(u):
+                axis, val = axis.lower(), float(val)
+                if axis == "f":
+                    continue
+                if absolute:
+                    pos[axis] = val
+                elif pos[axis] is not None:
+                    pos[axis] += val
+            if (prev["x"] is None or prev["y"] is None
+                    or pos["x"] is None or pos["y"] is None):
+                continue
+            if abs(pos["x"] - prev["x"]) < 1e-9 \
+                    and abs(pos["y"] - prev["y"]) < 1e-9:
+                continue
+            seg = (prev["x"], prev["y"], pos["x"], pos["y"])
+            all_segs.append(seg)
+            if force_active > 0 or not control_on:
+                engaged_segs.append(seg)
+
+    note = ""
+    segs = engaged_segs
+    if not segs:
+        segs = all_segs
+        note = ("job has no engaged (force / position-mode) moves — "
+                "tracing every XY move")
+    if not segs:
+        raise ValueError("job has no XY motion to trace")
+
+    interval = max(0.05, float(interval))
+    radius2 = (interval / 2.0) ** 2
+    accepted = []
+
+    def accept(x, y):
+        for ax, ay in accepted:
+            if (ax - x) ** 2 + (ay - y) ** 2 < radius2:
+                return
+        accepted.append((x, y))
+
+    # Resample the polyline continuously (the odometer carries across
+    # segment joins) so a meander's short row links don't restart it.
+    accept(segs[0][0], segs[0][1])
+    odo = 0.0          # distance since the last emitted sample
+    for x0, y0, x1, y1 in segs:
+        length = ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+        if length < 1e-9:
+            continue
+        travelled = 0.0
+        while travelled + (interval - odo) <= length + 1e-9:
+            travelled += interval - odo
+            odo = 0.0
+            t = travelled / length
+            accept(x0 + (x1 - x0) * t, y0 + (y1 - y0) * t)
+        odo += length - travelled
+    accept(segs[-1][2], segs[-1][3])
+
+    if len(accepted) > max_points:
+        raise ValueError(
+            f"{len(accepted)} taps at {interval:g} mm spacing exceeds the "
+            f"limit of {max_points} — use a larger interval")
+    offx, offy = xy_offset
+    points = [[round(x + offx, 3), round(y + offy, 3)] for x, y in accepted]
+    return points, note
 
 
 class Machine:
@@ -2299,6 +2456,10 @@ class Machine:
                 "size_x_mm": m.get("size_x_mm"),
                 "size_y_mm": m.get("size_y_mm"),
                 "center": m.get("center"),
+                "kind": m.get("kind", "grid"),
+                "n_points": (len(m["points"]) if m.get("kind") == "path"
+                             else None),
+                "job": m.get("job"),
             })
         return meshes
 
@@ -2327,7 +2488,7 @@ class Machine:
                 m = json.load(f)
         except (OSError, ValueError):
             return False, f"Mesh '{clean}' not found or unreadable"
-        if not (m.get("xs") and m.get("ys") and m.get("z")):
+        if not mesh_valid(m):
             return False, f"Mesh '{clean}' is malformed"
         self.mesh = m
         save_mesh(m)  # becomes the active mesh, survives restart
@@ -2506,6 +2667,263 @@ class Machine:
                                  f"{self.mesh['range_mm']:.3f} mm")
 
     # ------------------------------------------------------------------ #
+    # Path-traced mesh
+    #
+    # Tap the surface along the toolpath a job is about to surface (one
+    # contact per `interval` mm of engaged travel), save the contacts as a
+    # point-cloud mesh and return to the start. Same probe mechanics as
+    # the grid mesh; the difference is where it taps. Runs standalone
+    # (start_path_mesh) or as the first phase of a job (start_job with
+    # probe=...), in which case the first tap — the job's engagement point
+    # — also becomes the touch-off reference so a surface-referenced job
+    # starts on a fresh, consistent Z frame.
+
+    def _record_touchoff(self, z, x, y, noise):
+        """Store a fresh surface reference (touch-off) at machine (x, y)."""
+        to = self.touchoff
+        prev = to.get("last") or {}
+        prev_z = prev.get("surface_z")
+        last = {
+            "surface_z": round(z, 4),
+            "x": round(x, 3), "y": round(y, 3),
+            "created": time.time(),
+            "prev_surface_z": prev_z,
+            "delta": round(z - prev_z, 4) if prev_z is not None else None,
+            "noise_std": round(noise, 3),
+        }
+        to["last"] = last
+        try:
+            with open(TOUCHOFF_PATH, "w") as f:
+                json.dump(last, f, indent=2)
+        except OSError:
+            pass
+        return last
+
+    @staticmethod
+    def _path_probe_params(params):
+        """Merge and clamp path-probe parameters; (params, error)."""
+        p = dict(MESH_DEFAULTS)
+        p.update(PATH_MESH_DEFAULTS)
+        limits = dict(MESH_LIMITS)
+        limits.update(PATH_MESH_LIMITS)
+        for key, (lo, hi) in limits.items():
+            if params and key in params:
+                try:
+                    p[key] = float(params[key])
+                except (TypeError, ValueError):
+                    return None, f"Bad value for {key}"
+            p[key] = max(lo, min(hi, p[key]))
+        p["max_points"] = int(round(p["max_points"]))
+        return p, None
+
+    def _path_probe_ready(self):
+        """Common preconditions for tapping along a path; error or None."""
+        if not self.sensor_ok:
+            return "Sensor not available"
+        if self.klipper_state in ("offline", "unknown", "error",
+                                  "startup", "shutdown"):
+            return "Klipper is not connected"
+        homed = self.homed_axes or ""
+        if not all(a in homed for a in "xyz"):
+            return "All axes must be homed for path probing"
+        sp = self.spindle.status()
+        if sp.get("available") and sp.get("running"):
+            return ("Stop the spindle before path probing — a spinning "
+                    "rod consumes itself at first touch and the taps "
+                    "read low")
+        return None
+
+    def _probe_path(self, points, p, prog, abort_event):
+        """Tap each machine-coord (x, y) in `points` from the current
+        position and return a path mesh dict. Updates prog[phase /
+        message / done] as it goes. Returns to the start XYZ when done;
+        on failure retracts to the start height. Raises RuntimeError or
+        _AutotuneAbort. Leaves the gcode Z offset at zero (machine
+        frame) — callers set the job frame afterwards."""
+        probe_feed = p["feedrate"]
+        travel_feed = float(self.config["retract_feedrate"])
+        start_z = cur_z = None
+        offx, offy = self.xy_offset   # points are machine coords
+
+        def check_abort():
+            if abort_event.is_set():
+                raise _AutotuneAbort()
+
+        def zgo(z, feed):
+            check_abort()
+            if not self._gcode(f"G90\nG1 Z{z:.4f} F{feed:.0f}\nM400",
+                               timeout=60.0):
+                raise RuntimeError(
+                    "Z move rejected (Klipper offline or outside limits)")
+            return z
+
+        def xygo(x, y):
+            check_abort()
+            if not self._gcode(
+                    f"G90\nG1 X{x - offx:.3f} Y{y - offy:.3f} "
+                    f"F{p['xy_feedrate']:.0f}\nM400", timeout=120.0):
+                raise RuntimeError(
+                    f"XY move to ({x:.1f}, {y:.1f}) rejected — path point "
+                    "outside machine limits?")
+
+        ok = False
+        try:
+            prog["phase"] = "setup"
+            prog["message"] = "Clearing Z offset, taring in free air"
+            self.control_enabled = False
+            if not self._gcode("SET_GCODE_OFFSET Z=0", timeout=5.0):
+                raise RuntimeError("Could not reach Klipper")
+            time.sleep(0.6)
+            start_x, start_y = self.position[0], self.position[1]
+            start_z = cur_z = self.position[2]
+            if not self.tare():
+                raise RuntimeError("Tare failed (sensor unavailable)")
+
+            prog["phase"] = "noise"
+            prog["message"] = "Measuring baseline sensor noise"
+            baseline, noise = self._at_sample(1.5)
+            check_abort()
+            threshold = max(6.0 * noise, p["threshold"])
+            floor_z = max(start_z - p["max_travel"],
+                          float(self.config.get("z_floor", -1000.0)))
+
+            samples = []
+            highest = None
+            total = len(points)
+            for count, (gx, gy) in enumerate(points, start=1):
+                prog["phase"] = "probe"
+                prog["message"] = f"tap {count}/{total} ({gx:.1f}, {gy:.1f})"
+                travel_z = (start_z if highest is None
+                            else min(start_z, highest + p["clearance"]))
+                if abs(cur_z - travel_z) > 1e-6:
+                    cur_z = zgo(travel_z, travel_feed)
+                xygo(gx, gy)
+                time.sleep(p["settle_s"])
+
+                while True:   # coarse descent until contact
+                    if cur_z - p["approach_step"] < floor_z:
+                        raise RuntimeError(
+                            f"No contact at ({gx:.1f}, {gy:.1f}) within "
+                            f"{p['max_travel']:g} mm of the start height")
+                    cur_z = zgo(cur_z - p["approach_step"], probe_feed)
+                    time.sleep(p["settle_s"])
+                    f, _ = self._at_sample(0.15)
+                    if f - baseline >= threshold:
+                        break
+
+                backoff = max(2.0 * p["approach_step"], 4.0 * p["fine_step"])
+                cur_z = zgo(cur_z + backoff, probe_feed)
+                time.sleep(max(0.3, p["settle_s"]))
+                fine_limit = int(backoff / p["fine_step"] * 3) + 10
+                fine_n = 0
+                while True:   # fine re-touch
+                    cur_z = zgo(cur_z - p["fine_step"], probe_feed)
+                    time.sleep(p["settle_s"])
+                    f, _ = self._at_sample(0.15)
+                    if f - baseline >= threshold:
+                        break
+                    fine_n += 1
+                    if fine_n > fine_limit:
+                        raise RuntimeError(
+                            f"Lost contact refining ({gx:.1f}, {gy:.1f})")
+
+                samples.append([round(gx, 3), round(gy, 3), round(cur_z, 4)])
+                highest = cur_z if highest is None else max(highest, cur_z)
+                prog["done"] = count
+
+            prog["phase"] = "finish"
+            prog["message"] = "Returning to start"
+            cur_z = zgo(start_z, travel_feed)
+            xygo(start_x, start_y)
+            ok = True
+            zs = [s[2] for s in samples]
+            xs = [s[0] for s in samples]
+            ys = [s[1] for s in samples]
+            return {
+                "kind": "path",
+                "created": time.time(),
+                "interval": p["interval"],
+                "points": samples,
+                "n_points": len(samples),
+                "center": [round((min(xs) + max(xs)) / 2.0, 3),
+                           round((min(ys) + max(ys)) / 2.0, 3)],
+                "size_x_mm": round(max(xs) - min(xs), 3),
+                "size_y_mm": round(max(ys) - min(ys), 3),
+                "start": [round(start_x, 3), round(start_y, 3),
+                          round(start_z, 4)],
+                "noise_std": round(noise, 3),
+                "threshold": round(threshold, 2),
+                "range_mm": round(max(zs) - min(zs), 4),
+            }
+        finally:
+            self.control_enabled = False
+            if not ok and start_z is not None:
+                self._gcode(f"G90\nG1 Z{start_z:.3f} F{travel_feed:.0f}\nM400",
+                            timeout=60.0)
+
+    def start_path_mesh(self, filename, params=None):
+        """Probe a job's toolpath into the active mesh without running
+        the job (progress via mesh_probe, like the grid mesh)."""
+        busy = self._exclusive_busy()
+        if busy:
+            return False, f"Cannot probe path: {busy}"
+        err = self._path_probe_ready()
+        if err:
+            return False, err
+        p, err = self._path_probe_params(params)
+        if err:
+            return False, err
+        path = os.path.join(JOB_DIR, os.path.basename(filename))
+        try:
+            steps = parse_job_file(path)
+            points, note = job_path_points(
+                steps, p["interval"], tuple(self.xy_offset), p["max_points"])
+        except (OSError, ValueError) as e:
+            return False, str(e)
+
+        self.control_enabled = False
+        self._mesh_abort.clear()
+        self.mesh_probe = {
+            "state": "running", "phase": "starting", "message": note,
+            "params": p, "started": time.time(), "error": None,
+            "done": 0, "total": len(points), "kind": "path",
+            "job": os.path.basename(filename),
+        }
+        self._mesh_thread = threading.Thread(
+            target=self._path_mesh_worker, args=(points, p), daemon=True)
+        self._mesh_thread.start()
+        return True, (f"Path probing started: {len(points)} taps"
+                      + (f" ({note})" if note else ""))
+
+    def _path_mesh_worker(self, points, p):
+        mp = self.mesh_probe
+        final_state = "error"
+        try:
+            mesh = self._probe_path(points, p, mp, self._mesh_abort)
+            mesh["job"] = mp.get("job")
+            self.mesh = mesh
+            save_mesh(mesh)
+            first = mesh["points"][0]
+            self._record_touchoff(first[2], first[0], first[1],
+                                  mesh["noise_std"])
+            final_state = "done"
+        except _AutotuneAbort:
+            final_state = "aborted"
+            mp["message"] = "aborted by user"
+        except RuntimeError as e:
+            mp["error"] = str(e)
+        except Exception as e:  # never leave the head buried on a bug
+            mp["error"] = f"unexpected: {e}"
+        finally:
+            self.control_enabled = False
+            mp["state"] = final_state
+            mp["phase"] = "finished"
+            if final_state == "done":
+                mp["message"] = (f"path mesh complete — {self.mesh['n_points']} "
+                                 f"taps, range {self.mesh['range_mm']:.3f} mm; "
+                                 "touch-off updated from the first tap")
+
+    # ------------------------------------------------------------------ #
     # Single-point touch-off
     #
     # Quick tool-length / starting-height reference after swapping to a
@@ -2627,23 +3045,7 @@ class Machine:
                 if fine_n > fine_limit:
                     raise RuntimeError("Lost contact during fine re-touch")
 
-            prev = to.get("last") or {}
-            prev_z = prev.get("surface_z")
-            last = {
-                "surface_z": round(cur_z, 4),
-                "x": round(x, 3), "y": round(y, 3),
-                "created": time.time(),
-                "prev_surface_z": prev_z,
-                "delta": (round(cur_z - prev_z, 4)
-                          if prev_z is not None else None),
-                "noise_std": round(noise, 3),
-            }
-            to["last"] = last
-            try:
-                with open(TOUCHOFF_PATH, "w") as f:
-                    json.dump(last, f, indent=2)
-            except OSError:
-                pass
+            self._record_touchoff(cur_z, x, y, noise)
             final_state = "done"
 
         except _AutotuneAbort:
@@ -3066,7 +3468,13 @@ class Machine:
             jobs.append(entry)
         return jobs
 
-    def start_job(self, filename, notes="", start_step=1):
+    def start_job(self, filename, notes="", start_step=1, probe=None):
+        """Run a job. With `probe` (a dict of path-probe parameters, may
+        be empty) the run first taps the surface along the job's engaged
+        toolpath, saves that as the active mesh, re-touches-off at the
+        engagement point, returns to the start and — when
+        probe["confirm"] is true (default) — waits for the operator to
+        confirm (start the spindle) before the first job step."""
         busy = self._exclusive_busy()
         if busy:
             return False, f"Cannot start job: {busy}"
@@ -3079,6 +3487,29 @@ class Machine:
             steps = parse_job_file(path)
         except (OSError, ValueError) as e:
             return False, str(e)
+
+        probe_points = None
+        probe_params = None
+        if probe is not None:
+            if int(start_step or 1) != 1:
+                return False, ("Path probing runs the job from step 1 — "
+                               "clear the start step or skip the probe")
+            err = self._path_probe_ready()
+            if err:
+                return False, err
+            probe_params, err = self._path_probe_params(probe)
+            if err:
+                return False, err
+            confirm = probe.get("confirm", True) if isinstance(probe, dict) \
+                else True
+            probe_params["confirm"] = bool(confirm)
+            try:
+                probe_points, probe_note = job_path_points(
+                    steps, probe_params["interval"], tuple(self.xy_offset),
+                    probe_params["max_points"])
+            except ValueError as e:
+                return False, f"Path probe: {e}"
+            probe_params["note"] = probe_note
 
         # Preflight: a force reading far from zero with the head parked
         # in free air means a stale tare or something new on the
@@ -3129,12 +3560,27 @@ class Machine:
             "started": time.time(),
             "log": None,
             "pause": None,
+            "probe": ({"state": "running", "phase": "starting",
+                       "message": probe_params["note"], "done": 0,
+                       "total": len(probe_points),
+                       "interval": probe_params["interval"]}
+                      if probe_points is not None else None),
         }
+        if probe_points is not None:
+            # The whole point of tapping the path is to follow it: make
+            # sure the feedforward is switched on for this run.
+            if float(self.config.get("mesh_enabled", 1.0)) == 0.0:
+                self.config["mesh_enabled"] = 1.0
+                save_config(self.config)
         self._job_thread = threading.Thread(
             target=self._job_worker,
-            args=(steps, str(notes or ""), start_step, resume_force),
+            args=(steps, str(notes or ""), start_step, resume_force,
+                  probe_points, probe_params),
             daemon=True)
         self._job_thread.start()
+        if probe_points is not None:
+            return True, (f"Probing {len(probe_points)} taps along the "
+                          f"path, then running")
         return True, "Job started"
 
     def _run_log_header(self, jobname, notes):
@@ -3545,9 +3991,65 @@ class Machine:
             return self._fail_why("Motion sync at block end failed")
         return None
 
-    def _job_worker(self, steps, notes="", start_step=1, resume_force=None):
+    def _job_probe_phase(self, job, points, p):
+        """Path-probe phase at the head of a job: tap the path, adopt the
+        result as the active mesh and touch-off, return to the start and
+        optionally wait for the operator. Returns (error, aborted)."""
+        prog = job["probe"]
+        try:
+            mesh = self._probe_path(points, p, prog, self._job_abort)
+        except _AutotuneAbort:
+            prog["state"] = "aborted"
+            return None, True
+        except RuntimeError as e:
+            prog["state"] = "error"
+            return f"Path probe: {e}", False
+        except Exception as e:  # never leave the head buried on a bug
+            prog["state"] = "error"
+            return f"Path probe: unexpected: {e}", False
+        mesh["job"] = job["file"]
+        self.mesh = mesh
+        save_mesh(mesh)
+        first = mesh["points"][0]
+        last = self._record_touchoff(first[2], first[0], first[1],
+                                     mesh["noise_std"])
+        prog["state"] = "done"
+        prog["phase"] = "finished"
+        delta = last.get("delta")
+        prog["message"] = (
+            f"{mesh['n_points']} taps, range {mesh['range_mm']:.3f} mm; "
+            f"surface Z {first[2]:.3f} at the engagement point"
+            + (f" ({delta:+.3f} vs last touch-off)" if delta is not None
+               else ""))
+        if p.get("confirm", True):
+            job["pause"] = {
+                "stage": "waiting_probe",
+                "message": ("Path probed: " + prog["message"]
+                            + ". Start the spindle if this run needs it, "
+                              "then press Start Job."),
+            }
+            try:
+                if not self._wait_confirm():
+                    return None, True
+            finally:
+                job["pause"] = None
+        return None, False
+
+    def _job_worker(self, steps, notes="", start_step=1, resume_force=None,
+                    probe_points=None, probe_params=None):
         job = self.job
         try:
+            if probe_points is not None:
+                error, aborted = self._job_probe_phase(
+                    job, probe_points, probe_params)
+                if error:
+                    job["state"] = "error"
+                    job["error"] = error
+                    return
+                if aborted or self._job_abort.is_set():
+                    job["state"] = "aborted"
+                    return
+
             # Establish the job's Z frame. Surface-referenced jobs anchor
             # Z0 to the last touched-off surface; otherwise the frame is
             # cleaned of any leftover force-control offset. The XY work

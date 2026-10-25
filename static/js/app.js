@@ -821,10 +821,47 @@ $("btn-at-apply").addEventListener("click", async () => {
 let meshPrevState = "idle";
 let meshGridLoaded = false;
 
+function renderPathMesh(wrap, mesh) {
+  // Scatter of the taps, largest Y on top like the machine layout
+  const pts = mesh.points;
+  const zs = pts.map((p) => p[2]);
+  const zmin = Math.min(...zs), zmax = Math.max(...zs);
+  const range = zmax - zmin || 1;
+  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const W = 420, pad = 28;
+  const span = Math.max(x1 - x0, y1 - y0, 1);
+  const H = Math.max(140, Math.round((y1 - y0 + 2) / (x1 - x0 + 2) * (W - 2 * pad)) + 2 * pad);
+  const sc = Math.min((W - 2 * pad) / (x1 - x0 || 1), (H - 2 * pad) / (y1 - y0 || 1));
+  const sx = (x) => pad + (x - x0) * sc;
+  const sy = (y) => H - pad - (y - y0) * sc;
+  const r = Math.max(3, Math.min(9, 0.35 * (mesh.interval || 5) * sc));
+  let svg = `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" ` +
+    `style="background:#1a1a1a;border-radius:4px;max-width:100%">`;
+  pts.forEach(([x, y, z], i) => {
+    const t = (z - zmin) / range;
+    const hue = 240 - 240 * t;
+    svg += `<circle cx="${sx(x).toFixed(1)}" cy="${sy(y).toFixed(1)}" r="${r.toFixed(1)}" ` +
+      `fill="hsl(${hue},55%,45%)" stroke="#000" stroke-width="0.5">` +
+      `<title>#${i + 1}  X ${x.toFixed(2)}  Y ${y.toFixed(2)}  Z ${z.toFixed(3)}</title></circle>`;
+  });
+  svg += `<text x="${pad}" y="${H - 8}" fill="#aaa" font-size="11">X ${x0.toFixed(1)} … ${x1.toFixed(1)}</text>` +
+    `<text x="${W - pad}" y="${H - 8}" fill="#aaa" font-size="11" text-anchor="end">Y ${y0.toFixed(1)} … ${y1.toFixed(1)}</text>` +
+    `<text x="${pad}" y="16" fill="#aaa" font-size="11">` +
+    `${pts.length} taps · low Z ${zmin.toFixed(3)} (blue) → high Z ${zmax.toFixed(3)} (red) · span ${span.toFixed(1)} mm</text>` +
+    `</svg>`;
+  wrap.innerHTML = svg;
+}
+
 function renderMeshGrid(mesh) {
   const wrap = $("mesh-grid");
   if (!mesh) {
     wrap.innerHTML = "";
+    return;
+  }
+  if (mesh.kind === "path") {
+    renderPathMesh(wrap, mesh);
     return;
   }
   const zvals = mesh.z.flat();
@@ -864,15 +901,16 @@ function updateMesh(m) {
 
   let txt = probe.state || "idle";
   if (running) {
-    txt = `${probe.phase}: ${probe.message || "..."}` +
-      (probe.total ? ` — ${probe.done}/${probe.total} points` : "");
+    txt = `${probe.kind === "path" ? "path " : ""}${probe.phase}: ${probe.message || "..."}` +
+      (probe.total ? ` — ${probe.done}/${probe.total} ${probe.kind === "path" ? "taps" : "points"}` : "");
   } else if (probe.state === "error") txt = `error — ${probe.error}`;
   else if (probe.state === "aborted") txt = "aborted (retracted)";
   else if (probe.state === "done") txt = probe.message || "done ✓";
   $("mesh-status").innerText = txt;
 
   $("mesh-info").innerText = m.exists
-    ? `Mesh${m.name ? ` '${m.name}'` : ""}: ` +
+    ? `${m.kind === "path" ? `Path mesh (${m.n_points} taps)` : "Mesh"}` +
+      `${m.name ? ` '${m.name}'` : ""}: ` +
       `${new Date(m.created * 1000).toLocaleString()}, ` +
       `range ${m.range_mm.toFixed(3)} mm` +
       (m.enabled ? "" : " (DISABLED)")
@@ -916,7 +954,9 @@ async function refreshMeshList() {
     const tr = document.createElement("tr");
     const probed = m.created
       ? new Date(m.created * 1000).toLocaleString() : "--";
-    const grid = m.points_x && m.points_y
+    const grid = m.kind === "path"
+      ? `path, ${m.n_points} taps${m.job ? ` (${m.job})` : ""}`
+      : m.points_x && m.points_y
       ? `${m.points_x}×${m.points_y} / ${m.size_x_mm}×${m.size_y_mm} mm`
       : (m.points_per_side
          ? `${m.points_per_side}×${m.points_per_side} / ${m.size_mm} mm`
@@ -1175,8 +1215,67 @@ async function refreshJobs() {
     btn.title = pf.errors.length ? "Preflight errors — hover the ⛔ badge" : "";
     btn.addEventListener("click", () => runJob(j.name, pf));
     tr.lastElementChild.appendChild(btn);
+
+    const btnProbeRun = document.createElement("button");
+    btnProbeRun.className = "btn btn-blue";
+    btnProbeRun.innerText = "Probe + Run";
+    btnProbeRun.disabled = btn.disabled;
+    btnProbeRun.title = "Tap the surface along this job's path first, then run";
+    btnProbeRun.addEventListener("click", () => runJob(j.name, pf, true));
+    tr.lastElementChild.appendChild(btnProbeRun);
+
+    const btnProbe = document.createElement("button");
+    btnProbe.className = "btn btn-gray";
+    btnProbe.innerText = "Probe Only";
+    btnProbe.disabled = btn.disabled;
+    btnProbe.title = "Tap along this job's path into the active mesh, no run";
+    btnProbe.addEventListener("click", () => probePath(j.name));
+    tr.lastElementChild.appendChild(btnProbe);
     tbody.appendChild(tr);
   });
+}
+
+function probeParams() {
+  const p = {};
+  const iv = parseFloat($("probe-interval").value);
+  const cl = parseFloat($("probe-clearance").value);
+  if (!isNaN(iv)) p.interval = iv;
+  if (!isNaN(cl)) p.clearance = cl;
+  return p;
+}
+
+async function probePreview(name) {
+  const p = probeParams();
+  try {
+    const r = await (await fetch(`/api/mesh/path/preview?name=${encodeURIComponent(name)}` +
+      `&interval=${p.interval || 5}`)).json();
+    if (r.status !== "ok") return { text: r.message, n: 0 };
+    const est = Math.round(r.n * 6 / 60);
+    return {
+      text: `${r.n} taps${r.note ? ` (${r.note})` : ""}, roughly ${est < 1 ? "under a" : est} minute${est === 1 ? "" : "s"}`,
+      n: r.n,
+    };
+  } catch (e) {
+    return { text: "preview unavailable", n: 0 };
+  }
+}
+
+const PROBE_CHECKLIST =
+  "Confirm before continuing:\n" +
+  "  • Spindle OFF (a spinning rod ruins the taps)\n" +
+  "  • Head parked a few mm above the surface at the job's start position\n" +
+  "  • Work origin (Zero XY Here) set where the job expects it\n\n";
+
+async function probePath(name) {
+  const pv = await probePreview(name);
+  $("probe-preview").innerText = pv.text;
+  if (!pv.n) { alert(`Cannot probe path: ${pv.text}`); return; }
+  if (!confirm(`Probe the toolpath of "${name}"?\n\n${PROBE_CHECKLIST}` +
+      `${pv.text}. The taps become the active mesh and the first tap becomes ` +
+      "the touch-off reference. The head returns to where it started.")) return;
+  const res = await post("/api/mesh/path", { name, ...probeParams() });
+  if (res.status !== "ok") alert(`Could not start path probe: ${res.message}`);
+  else $("probe-preview").innerText = res.message;
 }
 
 function esc(s) {
@@ -1184,10 +1283,25 @@ function esc(s) {
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
-async function runJob(name, preflight) {
+async function runJob(name, preflight, probe = false) {
   const startStep = parseInt($("job-start-step").value, 10) || 1;
   let msg = `Run job "${name}"? AUTO Z force control will be enabled and ` +
     "force data will be recorded to a run log.";
+  const body = { name, notes: $("job-notes").value, start_step: startStep };
+  if (probe) {
+    if (startStep > 1) { alert("Probe + Run always starts at step 1 — reset the start step."); return; }
+    const pv = await probePreview(name);
+    $("probe-preview").innerText = pv.text;
+    if (!pv.n) { alert(`Cannot probe path: ${pv.text}`); return; }
+    const confirmAfter = $("probe-confirm").checked;
+    msg = `Probe the toolpath of "${name}", then run it?\n\n${PROBE_CHECKLIST}` +
+      `${pv.text}. The taps become the active mesh (feedforward ON), the first tap ` +
+      "becomes the touch-off, the head returns to the start" +
+      (confirmAfter
+        ? ", then the job WAITS for you to start the spindle and press Start Job."
+        : ", then the job starts IMMEDIATELY (no spindle pause).");
+    body.probe = { ...probeParams(), confirm: confirmAfter };
+  }
   if (preflight && preflight.warnings.length) {
     msg += "\n\nPREFLIGHT WARNINGS:\n• " + preflight.warnings.join("\n• ");
   }
@@ -1196,8 +1310,7 @@ async function runJob(name, preflight) {
       "directly to that step's coordinates. Make sure the path there is clear.";
   }
   if (!confirm(msg)) return;
-  const res = await post("/api/jobs/run",
-    { name, notes: $("job-notes").value, start_step: startStep });
+  const res = await post("/api/jobs/run", body);
   if (res.status !== "ok") alert(`Could not start job: ${res.message}`);
   else $("job-start-step").value = 1;
 }
@@ -1365,11 +1478,17 @@ function updateJobStatus(job) {
   btnClear.hidden = job.state === "running";
 
   const manualStages = ["pausing", "waiting_resume", "resume"];
-  const pauseKind = paused && manualStages.includes(job.pause.stage)
+  const pauseKind = paused && job.pause.stage === "waiting_probe"
+    ? "PROBED — READY TO START"
+    : paused && manualStages.includes(job.pause.stage)
     ? "PAUSED" : "PAUSED (rod change)";
   let msg = `${job.file}: ${paused ? pauseKind : job.state.toUpperCase()}` +
     ` — step ${job.row}/${job.total}`;
   if (job.step_desc && job.state === "running" && !paused) msg += ` (${job.step_desc})`;
+  if (job.probe && job.probe.state === "running") {
+    msg += ` — path probe ${job.probe.phase}: ${job.probe.message || "..."}` +
+      (job.probe.total ? ` (${job.probe.done}/${job.probe.total} taps)` : "");
+  }
   if (job.state === "running" && latestStatus &&
       latestStatus.config.max_rod_consumption > 0) {
     msg += ` — rod used ${latestStatus.rod_consumption.toFixed(2)}` +
@@ -1391,6 +1510,7 @@ function updateJobStatus(job) {
       job.pause.stage === "waiting_rod_change" ? "Rod Changed — Touch Off"
       : job.pause.stage === "waiting_spindle" ? "Spindle On — Re-engage"
       : job.pause.stage === "waiting_resume" ? "Resume Job"
+      : job.pause.stage === "waiting_probe" ? "Start Job"
       : "Working...";
   } else {
     box.hidden = true;

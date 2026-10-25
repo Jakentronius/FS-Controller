@@ -64,6 +64,9 @@ def api_status():
             "name": machine.mesh.get("name") if machine.mesh else None,
             "created": machine.mesh.get("created") if machine.mesh else None,
             "range_mm": machine.mesh.get("range_mm") if machine.mesh else None,
+            "kind": machine.mesh.get("kind", "grid") if machine.mesh else None,
+            "n_points": (machine.mesh.get("n_points")
+                         if machine.mesh else None),
             "probe": machine.mesh_probe,
         },
         "touchoff": machine.touchoff,
@@ -221,6 +224,37 @@ def api_mesh_start():
     ok, msg = machine.start_mesh(data)
     return jsonify({"status": "ok" if ok else "error", "message": msg}), \
         200 if ok else 400
+
+
+@app.post("/api/mesh/path")
+def api_mesh_path():
+    """Probe a job's toolpath into the active mesh (no run).
+    Body: {name, interval, clearance, max_travel}."""
+    data = request.get_json(force=True, silent=True) or {}
+    name = data.get("name", "")
+    if not name:
+        return jsonify({"status": "error",
+                        "message": "No job name provided"}), 400
+    ok, msg = machine.start_path_mesh(name, data)
+    return jsonify({"status": "ok" if ok else "error", "message": msg}), \
+        200 if ok else 400
+
+
+@app.get("/api/mesh/path/preview")
+def api_mesh_path_preview():
+    """Tap positions a path probe of ?name= at ?interval= would visit."""
+    name = request.args.get("name", "")
+    interval = request.args.get("interval", 5.0, type=float)
+    path = os.path.join(hardware.JOB_DIR, os.path.basename(name))
+    try:
+        steps = hardware.parse_job_file(path)
+        pts, note = hardware.job_path_points(
+            steps, interval, tuple(machine.xy_offset),
+            int(hardware.PATH_MESH_LIMITS["max_points"][1]))
+    except (OSError, ValueError) as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    return jsonify({"status": "ok", "points": pts, "n": len(pts),
+                    "note": note})
 
 
 @app.post("/api/mesh/abort")
@@ -423,8 +457,12 @@ def api_jobs_run():
     name = data.get("name", "")
     if not name:
         return jsonify({"status": "error", "message": "No job name provided"}), 400
+    probe = data.get("probe")     # dict (may be empty) = tap the path first
+    if probe is not None and not isinstance(probe, dict):
+        probe = {}
     ok, msg = machine.start_job(name, notes=data.get("notes", ""),
-                                start_step=data.get("start_step", 1))
+                                start_step=data.get("start_step", 1),
+                                probe=probe)
     code = 200 if ok else 400
     return jsonify({"status": "ok" if ok else "error", "message": msg}), code
 

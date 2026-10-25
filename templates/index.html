@@ -313,7 +313,9 @@
       <p class="hint">Grid may be rectangular (max 120 points). To catch
         short height waves along the weld direction, go dense on that axis:
         e.g. 21&times;2 points over 100&times;20&nbsp;mm gives 5&nbsp;mm X
-        resolution in one strip.</p>
+        resolution in one strip. Or skip the grid: <b>Probe Only</b> / <b>Probe +
+        Run</b> on the Jobs tab tap along a job's own toolpath and store the result
+        as a <b>path mesh</b> (heights are interpolated from the nearest taps).</p>
       <div id="mesh-status" class="hint">idle</div>
       <div class="form-row">
         <span id="mesh-info" class="hint">No mesh stored.</span>
@@ -566,6 +568,22 @@ G90</pre>
         <span class="hint">for resuming an interrupted job — the machine moves
           directly to that step's coordinates; the last ;FORCE before it is applied</span>
       </div>
+      <div class="form-row" id="probe-row">
+        <label>Tap interval (mm):
+          <input type="number" id="probe-interval" value="5" min="0.5" step="0.5"></label>
+        <label>Clearance (mm):
+          <input type="number" id="probe-clearance" value="1" min="0.2" step="0.1"></label>
+        <label><input type="checkbox" id="probe-confirm" checked>
+          Wait for Start Job after probing (spindle on)</label>
+        <span id="probe-preview" class="hint"></span>
+      </div>
+      <p class="hint"><b>Probe + Run</b> traces the job's engaged toolpath first,
+        tapping the surface every <i>interval</i> mm with the spindle <b>off</b> (taps
+        closer than half an interval to an earlier one are skipped). The taps become
+        the active surface mesh (feedforward is switched on), the first tap re-touches-off
+        the engagement point, the head returns to where it started, and the job begins —
+        after you start the spindle and press Start Job, if the box is ticked.
+        <b>Probe Only</b> does the same without running.</p>
     </div>
 
     <div class="panel">
